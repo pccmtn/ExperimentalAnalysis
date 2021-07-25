@@ -1,0 +1,388 @@
+---
+title: "Experimental Analysis Tutorial"
+author: "Martina Pocchiari and Francesco Capozza"
+institution: "Rotterdam School of Management and Erasmus School of Economics, Erasmus University"
+date: "7/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries and Functions
+
+Here, we will load the libraries that we need. Remember: if you did not install the packages already, do it using the code "install.packages()" as illustrated in the commented line below.
+
+```{r libs results = F, warning=F, message=F}
+
+# install.packages('packagename')
+
+library(tidyverse);library(data.table) # data wrangling and reshaping
+library(ggplot2) # plotting
+library(QuantPsyc) # To generate results
+library(grf)
+library(viridis) # For esthetics
+library(stargazer) # optional, for reporting
+```
+
+## Import Data
+
+In this example, we will work with example experimental data we generated using Qualtrics. We will be working with the "tibble" data structure, because our dataset is reasonably small, and tibble allows us to nicely preview the data directly in the console. For larger datasets, you may want to switch to a "data.table" structure. Run ?data.table for additional information on the data.table package and data structure.
+
+```{r data}
+
+dt <- fread('ExperimentalAnalysis_TestData.csv', stringsAsFactors = F, header = T) %>% 
+  as_tibble()
+
+```
+
+## Inspect and clean data
+
+See what the initial data table looks like, and print the column names:
+
+```{r warning=F, message=F}
+
+dt
+colnames(dt)
+
+```
+
+We need to remove the first two lines that are not useful for our analysis, but we will save the first line, because it contains the descriptions of our variables.
+
+```{r warning=F, message=F}
+
+dt_question_labels <- dt %>% slice(1)
+
+dt_question_labels <- dt_question_labels %>% 
+  t() %>%
+   as.data.frame() %>% 
+   mutate(Label = rownames(.))
+
+(dt <- dt %>% 
+  slice(-c(1,2)))
+
+```
+
+### Rename and reshape variables
+
+#### Rename
+
+We want to give distinctive names to our questions. For me, Q3 was my Treatment 1, Q6 was Treatment 2, Q7 was Control group. Q8 was age range, Q9 Nationality, Q10 frequency of use of internet, Q11: are you member of a brand community? Q12: if yes, which?
+
+```{r warning=F, message=F}
+  
+# 
+# ggplot(data = dt %>% 
+#          filter(Q5 != 'Prefer not to say'), 
+#        aes(x = factor(Q5), y = Q1_1)) +
+#   stat_summary(fun.data = mean_cl_normal, geom = 'pointrange') +
+#   theme_bw()
+# 
+# 
+# ggplot(data = dt %>% 
+#          filter(Q5 != 'Prefer not to say'), 
+#        aes(x = factor(Q5), y = Q1_1)) +
+#   ggdist::stat_halfeye() +
+#   theme_bw()
+
+dt <- dt %>% 
+  rename(Treatment = FL_8_DO, 
+         Outcome_T = Q3_1, 
+         Outcome_C = Q7_1,
+         Initial_Beliefs = Q15_1,
+         AttnCheck = Q16,
+         Age = Q8, 
+         Nationality = Q9, 
+         Internet_use = Q10,
+         Last_election = Q11, 
+         Which_politician = Q12)
+
+```
+
+#### Transform and reshape
+
+Then we need to transform slider scales into numeric vectors.
+
+```{r warning=F, message=F}
+
+dt <- dt %>% 
+  mutate_at(.vars = vars(Outcome_T,Outcome_C,Initial_Beliefs), .funs = as.numeric)
+
+```
+
+### Removing unusable answers
+
+#### Unfinished responses 
+
+We need to make sure that everyone finished the survey. If someone did not finish, we cannot analyse the data.
+
+```{r warning=F, message=F}
+
+dt %>% 
+  group_by(Finished) %>%
+  summarise(n = n())
+
+# If you have 'False' in the result, kick out those people
+
+dt <- dt %>% 
+  filter(Finished == 'True')
+
+```
+
+#### Preview or Test responses
+We also need to remove the answers that were given in "Preview" mode or "Test" mode, because those are not collected from the experimental sample. For this tutorial, we will not exclude "test" responses -- but you should exclude them from your own data.
+
+```{r eval = F,warning=F, message=F}
+
+dt <- dt %>% 
+  # filter(!(Status %in% c('Survey Preview', 'Survey Test')))
+  filter(!(Status %in% c('Survey Preview')))
+
+```
+
+#### Missing values in the outcome
+
+We need to check that there are no missing data in the treatment or outcome variables. Here, you can find the responses with missing data in the treatment or outcome, and identify the respondentID. These responses are not usable since there is no treatment.
+
+If you find missing data, you need to understand the cause of the missing data as soon as possible. It may be a technical error, or a systematic problem with your survey.
+
+```{r warning=F}
+
+ (test_NA <- dt %>% 
+   # select respondent ID's, outcome variables, and treatment indicator
+  select(ResponseId, Treatment, Outcome_C, Outcome_T) %>% 
+   # mutate everything into numeric
+   mutate_at(., vars(Outcome_C, Outcome_T), as.numeric) %>% 
+   mutate(Treatment_numeric = as.numeric(as.factor(Treatment))) %>% 
+   # if a cell is empty/missing, flag with NA
+   mutate_all(., function(x) ifelse(x == '', NA, x)) %>% 
+  bind_rows(tibble(Outcome_C = NA, Outcome_T = NA, Treatment_numeric = NA)) %>% 
+  rowwise() %>% 
+  mutate(sum = sum(Outcome_C, Outcome_T, Treatment_numeric, na.rm = T)) %>%
+  filter(sum == 0))
+
+# If ResponseID is equal to NA, then you're fine and you can skip this part.
+
+# if you have missing data, you can collect the ID's here:
+
+if (sum(test_NA$sum != 0)) {
+  
+  message("Your data has missing values! Find the cause ASAP.")
+  
+  Missing_ids <- dt %>% 
+  select(ResponseId, Treatment1, Treatment2, ControlGroup) %>% 
+  bind_rows(tibble(Treatment1 = NA, Treatment2 = NA, ControlGroup = NA)) %>% 
+  rowwise() %>% 
+  mutate(sum = sum(Treatment1,Treatment2,ControlGroup, na.rm = T)) %>%
+  filter(sum == 0)
+  
+  Missing_ids <- Missing_ids$ResponseId
+  
+  # and remove them from the sample
+  
+  dt <- dt %>% 
+    filter(!(ResponseId %in% Missing_ids))
+  
+}
+
+suppressWarnings(rm(test_NA, Missing_ids))
+
+```
+
+#### Failed Attention Checks
+
+We need to also exclude people who failed the attention checks.
+
+```{r eval = F,warning=F, message=F}
+
+# How many people failed the attention check?
+dt %>% 
+  filter(Q16 != 'A') %>% 
+  tally()
+
+dt <- dt %>% 
+  filter(Q16 == 'A')
+
+```
+
+#### Outliers
+
+Finally, we flag and exclude people whose completion time is larger or smaller than 3 standard deviations from the mean.
+
+```{r eval = F,warning=F, message=F}
+
+
+dt %>% 
+  filter(`Duration (in seconds)` < sd(`Duration (in seconds)`)*3 & `Duration (in seconds)` > -(sd(`Duration (in seconds)`)*3)) %>% 
+  tally()
+
+
+dt <- dt %>% 
+  filter(`Duration (in seconds)` < sd(`Duration (in seconds)`)*3 & `Duration (in seconds)` > -(sd(`Duration (in seconds)`)*3))
+
+```
+
+#### Dependent variable
+
+Here there are 2 possible cases:
+
+- You measured the outcome separately in each Qualtrics treatment block (treatment block and control block).
+
+- You measured the DV only once, outside of the treatment and control Qualtrics blocks.
+
+**In either case, your DV should have no missing values.**
+
+##### Case 1: You measured the DV separately in each block (treatment block and control block).
+
+If you measured the DV in the same block as the treatment, then we need to also add one variable with the value of the DV. 
+
+```{r warning=F, message=F}
+
+dt <- dt %>% 
+  rowwise() %>% 
+  mutate(Outcome = sum(Outcome_T, Outcome_C, na.rm = T))
+
+# You should have no missing values in this column
+summary(dt$Outcome)
+
+```
+
+##### Case 2: You measured the DV only once outside of the treatment and control blocks.
+
+If you measured the DV in a separate question block, then you should already have the question in  the right format for the analysis, we can just rename it.
+
+```{r eval = F,warning=F, message=F}
+
+dt <- dt %>% 
+  rename(DV = name_of_your_dv) 
+```
+
+#### Control variables
+
+You need to transform the interval variables into factors
+
+```{r warning=F, message=F}
+dt <- dt %>% 
+  mutate_at(c('Age', 'Nationality', 'Internet_use', 'Last_election'), as.factor) 
+```
+
+#### Integrity of randomization
+
+We will make sure that the participants in the two groups, Treatment and Control, share similar characteristics on average.
+
+```{r warning=F, message=F}
+
+chisq.test(dt$Treatment, dt$Age, correct=FALSE)
+
+```
+
+
+## Data visualization
+
+### Outcome across conditions
+
+For the first visualization, we will check whether the distribution of the outcome variable changes across experimental conditions. We are particularly interested about a few specific moments of the distribution -- such as the mean and the median.
+
+```{r warning=F, message=F}
+
+dt %>% 
+  group_by(Treatment) %>% 
+  summarise(mean_T = mean(Outcome),
+         median_T = median(Outcome)) 
+
+dt %>% 
+  group_by(Treatment) %>% 
+  mutate(mean_T = mean(Outcome),
+         median_T = median(Outcome)) %>% 
+  ggplot(aes(x = Outcome)) +
+  geom_histogram() +
+  geom_vline(aes(xintercept = mean_T), color = 'red', linetype= 2) +
+  geom_vline(aes(xintercept = median_T), color = 'blue', linetype= 2) +
+  facet_wrap(.~Treatment) +
+  theme_bw() +
+  labs(caption = 'Red line: mean; Blue line: median')
+```
+
+```{r warning=F, message=F}
+
+dt %>% 
+  group_by(Treatment) %>% 
+  mutate(mean_T = mean(Outcome),
+         median_T = median(Outcome)) %>%
+  ungroup %>% 
+  ggplot(aes(x = Treatment, y = Outcome)) +
+  stat_summary(fun.data = mean_cl_boot) +
+  theme_bw() 
+```
+
+### Heterogeneity
+
+We can also check how the outcome changes across people with different background characteristics. Let's look, for example, at age:
+
+```{r warning=F, message=F}
+
+dt <- dt %>%
+  mutate(Age = factor(Age, levels = c('18 or younger', '19-24', '25-35',
+                              '36-45', '46-55', '56 or older')))
+dt %>%
+  ggplot(aes(x = Age, y = Outcome, color= Treatment)) +
+  stat_summary(fun.data = mean_cl_boot, position = position_dodge(width = .5)) +
+  theme_bw() +
+  scale_color_viridis(discrete = T) +
+  coord_flip()
+
+```
+
+
+## Parametric Analysis
+
+### T-Test
+
+Comparing the outcome between treatment and control.
+
+```{r warning=F, message=F}
+
+t.test(dt$Outcome[dt$Treatment == 'Control'],dt$Outcome[dt$Treatment == 'Treatment1'] , alternative = "two.sided", paired = F)
+
+```
+
+
+### Linear Regression
+
+```{r warning=F, message=F}
+
+fit <- lm(Outcome ~ 1 + Treatment + Age + Internet_use, data = dt)
+summary(fit)
+
+```
+
+## Heterogeneity: Generalized Random Forests
+
+```{r grf warning=F, message=F}
+
+W <- dt[, 'Treatment'] %>%
+  mutate(Treatment = ifelse(Treatment == 'Treatment1', 1, 0)) %>% 
+  as.matrix()
+
+X <- model.matrix(~ 0 + ., dt[c('Age','Nationality', 'Internet_use')])
+
+Y <- dt %>%
+  select(Outcome) %>%
+  as.matrix()
+
+
+cf <- causal_forest(X, Y, W)
+
+# conditional average treatment effect on the full sample (CATE).
+
+average_treatment_effect(cf, target.sample = "all")
+
+# conditional average treatment effect on the treated sample (CATT).
+
+average_treatment_effect(cf, target.sample = "treated")
+
+
+```
+
+
