@@ -198,11 +198,11 @@ We need to also exclude people who failed the attention checks.
 
 # How many people failed the attention check?
 dt %>% 
-  filter(Q16 != 'A') %>% 
+  filter(AttnCheck != 'A') %>% 
   tally()
 
 dt <- dt %>% 
-  filter(Q16 == 'A')
+  filter(AttnCheck == 'A')
 
 ```
 
