@@ -368,7 +368,7 @@ W <- dt[, 'Treatment'] %>%
 X <- model.matrix(~ 0 + ., dt[c('Age','Nationality', 'Internet_use')])
 
 Y <- dt %>%
-  select(Outcome) %>%
+  dplyr::select(Outcome) %>%
   as.matrix()
 
 
